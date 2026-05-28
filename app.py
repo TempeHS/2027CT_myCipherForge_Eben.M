@@ -3,10 +3,22 @@
 Provides a web interface for the 5-phase encryption algorithm.
 """
 
+from database import init_db, register_user, verify_user
 from flask import Flask, render_template, request
 from engine import encrypt, decrypt
 
+init_db()
 app = Flask(__name__)
+
+import os
+from functools import wraps
+from flask import session, redirect, url_for
+
+app.secret_key = os.urandom(24)  # Required for sessions
+
+# Store users (in real apps, use a database with hashed passwords!)
+# SECURITY NOTE: Never store plain text passwords in production.
+# Use werkzeug.security.generate_password_hash() to hash passwords.
 
 
 @app.route("/")
@@ -15,19 +27,88 @@ def index():
     return render_template("index.html")
 
 
-@@app.route("/workshop", methods=["GET", "POST"])
+def login_required(f):
+    """Decorator that ensures user is logged in."""
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get("logged_in"):
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Handle login form using database."""
+    if request.method == "POST":
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+
+        # Use database verification instead of dictionary
+        if verify_user(username, password):
+            session["logged_in"] = True
+            session["username"] = username
+            return redirect(url_for("workshop"))
+        else:
+            return render_template("login.html", error="Invalid credentials")
+
+    return render_template("login.html")
+
+
+@app.route("/logout")
+def logout():
+    """Log out the current user."""
+    session.clear()
+    return redirect(url_for("index"))
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    """Handle user registration."""
+    if request.method == "POST":
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm", "")
+
+        # Validation
+        if len(username) < 3:
+            return render_template(
+                "register.html", error="Username must be at least 3 characters"
+            )
+
+        if len(password) < 8:
+            return render_template(
+                "register.html", error="Password must be at least 8 characters"
+            )
+
+        if password != confirm:
+            return render_template("register.html", error="Passwords don't match")
+
+        # Try to register
+        if register_user(username, password):
+            return redirect(url_for("login"))
+        else:
+            return render_template("register.html", error="Username already exists")
+
+    return render_template("register.html")
+
+
+@app.route("/workshop", methods=["GET", "POST"])
+@login_required  # ← NEW: must be AFTER @app.route, BEFORE def
 def workshop():
     """Handle encryption and decryption requests."""
     result = ""
     original = ""
     error = ""
-    
+
     if request.method == "POST":
         try:
             # Get form data
             original = request.form.get("message", "")
             action = request.form.get("action", "encrypt")
-            
+
             # Validate message is not empty
             if not original.strip():
                 error = "Please enter a message to encrypt or decrypt."
@@ -38,9 +119,9 @@ def workshop():
                     "block_size": int(request.form.get("block_size", 4)),
                     "password": request.form.get("password", "SECRET"),
                     "noise_interval": int(request.form.get("noise_interval", 3)),
-                    "noise_char": request.form.get("noise_char", "~")
+                    "noise_char": request.form.get("noise_char", "~"),
                 }
-                
+
                 # Perform the operation
                 if action == "encrypt":
                     result = encrypt(original, key)
@@ -48,8 +129,10 @@ def workshop():
                     result = decrypt(original, key)
         except Exception as e:
             error = f"Error: {str(e)}"
-    
-    return render_template("workshop.html", result=result, original=original, error=error)
+
+    return render_template(
+        "workshop.html", result=result, original=original, error=error
+    )
 
 
 if __name__ == "__main__":
